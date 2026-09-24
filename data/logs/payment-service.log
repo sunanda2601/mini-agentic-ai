@@ -1,0 +1,6 @@
+2026-09-24T10:00:01 ERROR payment-service database connection timeout
+2026-09-24T10:00:04 ERROR payment-service database connection timeout
+2026-09-24T10:00:08 ERROR payment-service payment request failed
+2026-09-24T10:00:12 ERROR payment-service database connection timeout
+2026-09-24T10:00:15 ERROR payment-service payment request failed
+2026-09-24T10:00:20 ERROR payment-service database connection timeout

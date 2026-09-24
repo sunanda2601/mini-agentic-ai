@@ -16,31 +16,42 @@ def get_logs(request: GetLogsRequest) -> GetLogsResponse:
     if request.environment != "production":
         return GetLogsResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             timeframe=request.timeframe,
             error=ToolError(
                 code="UNSUPPORTED_ENVIRONMENT",
-                message=f"Environment '{request.environment}' is not available.",
+                message=(
+                    f"Environment '{request.environment}' "
+                    "is not available."
+                ),
             ),
         )
 
     if not log_file.exists():
         return GetLogsResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             timeframe=request.timeframe,
             error=ToolError(
                 code="SERVICE_LOG_NOT_FOUND",
-                message=f"No logs found for service '{request.service}'.",
+                message=(
+                    f"No logs found for service "
+                    f"'{request.service}'."
+                ),
             ),
         )
 
-    logs = log_file.read_text(encoding="utf-8").splitlines()
+    logs = log_file.read_text(
+        encoding="utf-8"
+    ).splitlines()
 
     return GetLogsResponse(
         success=True,
+        tenant_id=request.tenant_id,
         service=request.service,
         environment=request.environment,
         timeframe=request.timeframe,

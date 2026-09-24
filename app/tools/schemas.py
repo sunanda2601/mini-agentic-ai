@@ -2,6 +2,7 @@ from pydantic import BaseModel
 
 
 class GetLogsRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     service: str
     timeframe: str
     environment: str = "production"
@@ -14,6 +15,7 @@ class ToolError(BaseModel):
 
 class GetLogsResponse(BaseModel):
     success: bool
+    tenant_id: str
     service: str
     environment: str
     timeframe: str
@@ -23,12 +25,14 @@ class GetLogsResponse(BaseModel):
 
 
 class GetMetricsRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     service: str
     environment: str = "production"
 
 
 class GetMetricsResponse(BaseModel):
     success: bool
+    tenant_id: str
     service: str
     environment: str
     metrics: dict = {}
@@ -37,12 +41,14 @@ class GetMetricsResponse(BaseModel):
 
 
 class SimulateRestartRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     service: str
     environment: str = "production"
 
 
 class SimulateRestartResponse(BaseModel):
     success: bool
+    tenant_id: str
     service: str
     environment: str
     action: str
@@ -53,6 +59,7 @@ class SimulateRestartResponse(BaseModel):
 
 
 class SimulateScaleRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     service: str
     replicas: int
     environment: str = "production"
@@ -60,6 +67,7 @@ class SimulateScaleRequest(BaseModel):
 
 class SimulateScaleResponse(BaseModel):
     success: bool
+    tenant_id: str
     service: str
     environment: str
     requested_replicas: int
@@ -71,12 +79,14 @@ class SimulateScaleResponse(BaseModel):
 
 
 class GetDependencyGraphRequest(BaseModel):
+    tenant_id: str = "demo-tenant"
     service: str
     environment: str = "production"
 
 
 class GetDependencyGraphResponse(BaseModel):
     success: bool
+    tenant_id: str
     service: str
     environment: str
     dependencies: list[str] = []

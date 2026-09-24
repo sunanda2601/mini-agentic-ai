@@ -18,6 +18,7 @@ def simulate_scale(
     if request.environment != "production":
         return SimulateScaleResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             requested_replicas=request.replicas,
@@ -26,13 +27,17 @@ def simulate_scale(
             message="Scale action was not executed.",
             error=ToolError(
                 code="UNSUPPORTED_ENVIRONMENT",
-                message=f"Environment '{request.environment}' is not available.",
+                message=(
+                    f"Environment '{request.environment}' "
+                    "is not available."
+                ),
             ),
         )
 
     if request.replicas < 1:
         return SimulateScaleResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             requested_replicas=request.replicas,
@@ -48,6 +53,7 @@ def simulate_scale(
     if not SERVICES_FILE.exists():
         return SimulateScaleResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             requested_replicas=request.replicas,
@@ -61,12 +67,15 @@ def simulate_scale(
         )
 
     services = json.loads(
-        SERVICES_FILE.read_text(encoding="utf-8")
+        SERVICES_FILE.read_text(
+            encoding="utf-8"
+        )
     )
 
     if request.service not in services:
         return SimulateScaleResponse(
             success=False,
+            tenant_id=request.tenant_id,
             service=request.service,
             environment=request.environment,
             requested_replicas=request.replicas,
@@ -75,12 +84,16 @@ def simulate_scale(
             message="Scale action was not executed.",
             error=ToolError(
                 code="SERVICE_NOT_FOUND",
-                message=f"Service '{request.service}' does not exist.",
+                message=(
+                    f"Service '{request.service}' "
+                    "does not exist."
+                ),
             ),
         )
 
     return SimulateScaleResponse(
         success=True,
+        tenant_id=request.tenant_id,
         service=request.service,
         environment=request.environment,
         requested_replicas=request.replicas,
@@ -91,4 +104,3 @@ def simulate_scale(
             f"{request.replicas} replicas simulated successfully."
         ),
     )
-    

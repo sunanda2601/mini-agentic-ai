@@ -5,6 +5,7 @@ import networkx as nx
 
 
 SERVICES_FILE = Path("data/infrastructure/services.json")
+RUNBOOKS_DIR = Path("data/runbooks")
 
 
 class KnowledgeGraph:
@@ -21,6 +22,9 @@ class KnowledgeGraph:
         )
 
         for service_name, service_data in services.items():
+            # -----------------------------------------------------
+            # Service node
+            # -----------------------------------------------------
             self.graph.add_node(
                 service_name,
                 type="service",
@@ -29,27 +33,110 @@ class KnowledgeGraph:
                 owner=service_data["owner"],
             )
 
-            for dependency in service_data.get("dependencies", []):
+            # -----------------------------------------------------
+            # Dependency relationships
+            # -----------------------------------------------------
+            for dependency in service_data.get(
+                "dependencies",
+                [],
+            ):
                 self.graph.add_edge(
                     service_name,
                     dependency,
                     relationship="depends_on",
                 )
 
-    def get_dependencies(self, service: str) -> list[str]:
+            # -----------------------------------------------------
+            # Runbook relationships
+            # -----------------------------------------------------
+            self._add_runbook_relationships(
+                service_name
+            )
+
+    def _add_runbook_relationships(
+        self,
+        service: str,
+    ) -> None:
+        if not RUNBOOKS_DIR.exists():
+            return
+
+        # Find runbooks whose filename starts with the
+        # service name.
+        runbook_files = RUNBOOKS_DIR.glob(
+            f"{service}-*.md"
+        )
+
+        for runbook_path in runbook_files:
+            runbook_id = runbook_path.stem
+
+            self.graph.add_node(
+                runbook_id,
+                type="runbook",
+                service=service,
+                source=str(runbook_path),
+            )
+
+            self.graph.add_edge(
+                service,
+                runbook_id,
+                relationship="has_runbook",
+            )
+
+    def get_dependencies(
+        self,
+        service: str,
+    ) -> list[str]:
         if service not in self.graph:
             return []
 
-        return list(self.graph.successors(service))
+        return [
+            node
+            for node in self.graph.successors(service)
+            if self.graph.edges[
+                service,
+                node,
+            ].get("relationship") == "depends_on"
+        ]
 
-    def get_dependents(self, service: str) -> list[str]:
+    def get_dependents(
+        self,
+        service: str,
+    ) -> list[str]:
         if service not in self.graph:
             return []
 
-        return list(self.graph.predecessors(service))
+        return [
+            node
+            for node in self.graph.predecessors(service)
+            if self.graph.edges[
+                node,
+                service,
+            ].get("relationship") == "depends_on"
+        ]
 
-    def get_owner(self, service: str) -> str | None:
+    def get_owner(
+        self,
+        service: str,
+    ) -> str | None:
         if service not in self.graph:
             return None
 
-        return self.graph.nodes[service].get("owner")
+        return self.graph.nodes[
+            service
+        ].get("owner")
+
+    def get_runbooks(
+        self,
+        service: str,
+    ) -> list[str]:
+        if service not in self.graph:
+            return []
+
+        return [
+            node
+            for node in self.graph.successors(service)
+            if self.graph.edges[
+                service,
+                node,
+            ].get("relationship") == "has_runbook"
+        ]

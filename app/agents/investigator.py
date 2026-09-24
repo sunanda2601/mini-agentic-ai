@@ -19,6 +19,9 @@ class InvestigatorAgent:
 
     def investigate(self, incident: Incident) -> A2AMessage:
 
+        # =========================================================
+        # 1. Collect logs
+        # =========================================================
         logs = get_logs(
             GetLogsRequest(
                 service=incident.service,
@@ -27,6 +30,9 @@ class InvestigatorAgent:
             )
         )
 
+        # =========================================================
+        # 2. Collect service metrics
+        # =========================================================
         metrics = get_metrics(
             GetMetricsRequest(
                 service=incident.service,
@@ -34,6 +40,10 @@ class InvestigatorAgent:
             )
         )
 
+        # =========================================================
+        # 3. Retrieve runbook evidence
+        #    Hybrid retrieval = BM25 + semantic search
+        # =========================================================
         evidence = self.searcher.search(
             query=incident.description,
             top_k=3,
@@ -42,6 +52,9 @@ class InvestigatorAgent:
             },
         )
 
+        # =========================================================
+        # 4. Traverse knowledge graph
+        # =========================================================
         dependencies = self.graph.get_dependencies(
             incident.service
         )
@@ -54,7 +67,13 @@ class InvestigatorAgent:
             incident.service
         )
 
-        # Check health/metrics of dependencies
+        runbooks = self.graph.get_runbooks(
+            incident.service
+        )
+
+        # =========================================================
+        # 5. Check health/metrics of dependencies
+        # =========================================================
         dependency_metrics = {}
 
         for dependency in dependencies:
@@ -65,8 +84,13 @@ class InvestigatorAgent:
                 )
             )
 
-            dependency_metrics[dependency] = dependency_result.model_dump()
+            dependency_metrics[dependency] = (
+                dependency_result.model_dump()
+            )
 
+        # =========================================================
+        # 6. Return structured A2A investigation result
+        # =========================================================
         return A2AMessage(
             message_id=f"{incident.incident_id}-INVESTIGATION",
             sender=self.name,
@@ -83,5 +107,6 @@ class InvestigatorAgent:
                 "dependency_metrics": dependency_metrics,
                 "dependents": dependents,
                 "owner": owner,
+                "runbooks": runbooks,
             },
         )

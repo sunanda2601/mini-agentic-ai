@@ -1,0 +1,10 @@
+{
+    "service": "payment-db",
+    "environment": "production",
+    "version": "v12",
+    "error_rate": 0.01,
+    "latency_ms": 12,
+    "cpu_percent": 38,
+    "memory_percent": 52,
+    "healthy": true
+}

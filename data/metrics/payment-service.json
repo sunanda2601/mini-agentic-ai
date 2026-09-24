@@ -1,0 +1,10 @@
+{
+    "service": "payment-service",
+    "environment": "production",
+    "version": "v2.1",
+    "error_rate": 0.34,
+    "latency_ms": 1200,
+    "cpu_percent": 82,
+    "memory_percent": 76,
+    "healthy": false
+}

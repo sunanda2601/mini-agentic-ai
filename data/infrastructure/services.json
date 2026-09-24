@@ -1,0 +1,44 @@
+{
+    "checkout-service": {
+        "environment": "production",
+        "version": "v1.4",
+        "owner": "checkout-team",
+        "replicas": 3,
+        "dependencies": [
+            "payment-service"
+        ]
+    },
+    "payment-service": {
+        "environment": "production",
+        "version": "v2.1",
+        "owner": "payments-team",
+        "replicas": 3,
+        "dependencies": [
+            "payment-db",
+            "user-service"
+        ]
+    },
+    "payment-db": {
+        "environment": "production",
+        "version": "v12",
+        "owner": "database-team",
+        "replicas": 1,
+        "dependencies": []
+    },
+    "user-service": {
+        "environment": "production",
+        "version": "v3.2",
+        "owner": "identity-team",
+        "replicas": 3,
+        "dependencies": [
+            "user-db"
+        ]
+    },
+    "user-db": {
+        "environment": "production",
+        "version": "v9",
+        "owner": "database-team",
+        "replicas": 1,
+        "dependencies": []
+    }
+}

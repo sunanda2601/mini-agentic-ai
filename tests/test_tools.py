@@ -25,6 +25,7 @@ def test_get_logs_success():
     assert response.success is True
     assert response.service == "payment-service"
     assert len(response.logs) > 0
+    assert response.version == "1.0.0"
     assert response.error is None
 
 
@@ -38,6 +39,7 @@ def test_get_metrics_success():
 
     assert response.success is True
     assert response.metrics["healthy"] is False
+    assert response.version == "1.0.0"
     assert response.error is None
 
 
@@ -52,6 +54,7 @@ def test_simulate_restart():
     assert response.success is True
     assert response.simulated is True
     assert response.action == "restart"
+    assert response.version == "1.0.0"
 
 
 def test_simulate_scale():
@@ -66,6 +69,7 @@ def test_simulate_scale():
     assert response.success is True
     assert response.simulated is True
     assert response.requested_replicas == 5
+    assert response.version == "1.0.0"
 
 
 def test_dependency_graph():
@@ -79,3 +83,4 @@ def test_dependency_graph():
     assert response.success is True
     assert "payment-db" in response.dependencies
     assert "checkout-service" in response.dependents
+    assert response.version == "1.0.0"

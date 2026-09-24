@@ -18,7 +18,9 @@ class GetLogsResponse(BaseModel):
     environment: str
     timeframe: str
     logs: list[str] = []
+    version: str = "1.0.0"
     error: ToolError | None = None
+
 
 class GetMetricsRequest(BaseModel):
     service: str
@@ -30,7 +32,9 @@ class GetMetricsResponse(BaseModel):
     service: str
     environment: str
     metrics: dict = {}
+    version: str = "1.0.0"
     error: ToolError | None = None
+
 
 class SimulateRestartRequest(BaseModel):
     service: str
@@ -44,7 +48,9 @@ class SimulateRestartResponse(BaseModel):
     action: str
     simulated: bool
     message: str
+    version: str = "1.0.0"
     error: ToolError | None = None
+
 
 class SimulateScaleRequest(BaseModel):
     service: str
@@ -60,7 +66,9 @@ class SimulateScaleResponse(BaseModel):
     action: str
     simulated: bool
     message: str
+    version: str = "1.0.0"
     error: ToolError | None = None
+
 
 class GetDependencyGraphRequest(BaseModel):
     service: str
@@ -73,4 +81,5 @@ class GetDependencyGraphResponse(BaseModel):
     environment: str
     dependencies: list[str] = []
     dependents: list[str] = []
+    version: str = "1.0.0"
     error: ToolError | None = None

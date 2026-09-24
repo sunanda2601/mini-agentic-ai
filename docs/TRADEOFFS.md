@@ -115,77 +115,24 @@ A production system could use a dedicated graph database or graph service.
 
 ---
 
-## 6. In-Memory Workflow State vs Persistent State Store
+## 6. File-Based Workflow State vs Distributed Workflow State
 
 ### Choice
 
-The current workflow keeps state in the workflow execution and supports trace replay.
+The prototype persists workflow state as JSON files under the `traces/` directory.
 
 ### Advantages
 
 - Simple prototype architecture.
-- Easy local development.
-- Low infrastructure overhead.
+- State survives the current process.
+- Easy to inspect during development.
+- Supports workflow replay and debugging.
+- No additional database infrastructure is required.
 
 ### Trade-off
 
-The current implementation does not provide durable distributed workflow state.
+File-based persistence is not suitable for concurrent distributed production workloads.
 
 ### Future Improvement
 
-A production deployment could persist workflow state in a database or durable workflow engine.
-
----
-
-## 7. Simple Version Registry vs Full Artifact Registry
-
-### Choice
-
-The prototype uses explicit version metadata in:
-
-`app/version.py`
-
-### Advantages
-
-- Easy to understand.
-- Version information is visible in workflow traces.
-- Supports the prototype rollback process.
-
-### Trade-off
-
-It does not replace a complete production artifact or model registry.
-
-### Future Improvement
-
-Production deployments could use Git tags, container image versions, model registries, and artifact registries.
-
----
-
-## 8. Prototype Scope vs Production Infrastructure
-
-### Choice
-
-The implementation prioritizes the core agentic workflow, safety, retrieval, observability, testing, and auditability.
-
-### Advantages
-
-- Keeps the system focused on the assignment requirements.
-- Makes the architecture demonstrable within the project timebox.
-- Provides clear extension points for production integrations.
-
-### Trade-off
-
-Some production capabilities remain simplified, such as persistent distributed state and real infrastructure execution.
-
-### Summary
-
-The design prioritizes:
-
-- Safety
-- Auditability
-- Deterministic verification
-- Testability
-- Clear agent boundaries
-- Explainable workflow behavior
-
-The prototype can later be extended with production-grade infrastructure without changing the core agent and tool interfaces.
+A production deployment could use a durable workflow engine or distributed database-backed state store.

@@ -143,3 +143,103 @@ def test_approval_requires_pending_workflow(
 
     with pytest.raises(ValueError):
         workflow.approve(workflow_id)
+
+
+def test_human_can_stop_waiting_workflow(
+    tmp_path,
+):
+    workflow = IncidentWorkflow()
+    workflow.state_store = WorkflowStateStore(
+        directory=str(tmp_path)
+    )
+
+    workflow_id = "stop-test-001"
+
+    workflow.state_store.save(
+        workflow_id,
+        create_waiting_state(workflow_id),
+    )
+
+    result = workflow.stop(
+        workflow_id,
+        reason="Operator stopped the workflow.",
+    )
+
+    assert result["status"] == "STOPPED"
+    assert result["error"] == (
+        "Operator stopped the workflow."
+    )
+
+    assert result["approval"]["status"] == "STOPPED"
+    assert result["approval"]["stopped_by"] == "operator"
+    assert (
+        result["approval"]["stop_reason"]
+        == "Operator stopped the workflow."
+    )
+
+    events = workflow.tracer.get_events()
+
+    stopped_events = [
+        event
+        for event in events
+        if event["event_type"] == "workflow_stopped"
+    ]
+
+    assert len(stopped_events) == 1
+    assert (
+        stopped_events[0]["details"]["previous_status"]
+        == "WAITING_FOR_APPROVAL"
+    )
+
+
+def test_stopped_workflow_is_persisted(
+    tmp_path,
+):
+    workflow = IncidentWorkflow()
+    workflow.state_store = WorkflowStateStore(
+        directory=str(tmp_path)
+    )
+
+    workflow_id = "stop-test-002"
+
+    workflow.state_store.save(
+        workflow_id,
+        create_waiting_state(workflow_id),
+    )
+
+    workflow.stop(workflow_id)
+
+    saved_state = workflow.state_store.load(
+        workflow_id
+    )
+
+    assert saved_state["status"] == "STOPPED"
+    assert saved_state["error"] == (
+        "Workflow stopped by operator."
+    )
+    assert saved_state["approval"]["status"] == "STOPPED"
+
+
+def test_completed_workflow_cannot_be_stopped(
+    tmp_path,
+):
+    workflow = IncidentWorkflow()
+    workflow.state_store = WorkflowStateStore(
+        directory=str(tmp_path)
+    )
+
+    workflow_id = "stop-test-003"
+
+    workflow.state_store.save(
+        workflow_id,
+        {
+            "status": "COMPLETED",
+            "approval": {
+                "required": False,
+                "status": "NOT_REQUIRED",
+            },
+        },
+    )
+
+    with pytest.raises(ValueError):
+        workflow.stop(workflow_id)

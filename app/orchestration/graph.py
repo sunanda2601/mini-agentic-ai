@@ -712,6 +712,60 @@ class IncidentWorkflow:
 
 
 
+    def stop(
+        self,
+        workflow_id: str,
+        reason: str = "Workflow stopped by operator.",
+    ) -> WorkflowState:
+        """Stop a workflow before its approved action is executed."""
+        state: WorkflowState = self.state_store.load(workflow_id)
+
+        previous_status = state.get("status")
+
+        stoppable_statuses = {
+            "PLANNING",
+            "INVESTIGATING",
+            "ACTION_PROPOSED",
+            "VERIFYING",
+            "WAITING_FOR_APPROVAL",
+            "APPROVED",
+        }
+
+        if previous_status not in stoppable_statuses:
+            raise ValueError(
+                f"Workflow '{workflow_id}' cannot be stopped "
+                f"from status '{previous_status}'."
+            )
+
+        state["status"] = "STOPPED"
+        state["error"] = reason
+
+        approval = state.get("approval")
+
+        if approval:
+            state["approval"] = {
+                **approval,
+                "status": "STOPPED",
+                "stopped_by": "operator",
+                "stop_reason": reason,
+            }
+
+        self.tracer.record(
+            "workflow_stopped",
+            "orchestrator",
+            {
+                "incident_id": workflow_id,
+                "actor": "operator",
+                "reason": reason,
+                "previous_status": previous_status,
+            },
+        )
+
+        self.state_store.save(workflow_id, state)
+
+        return state
+
+
     def approve(self, workflow_id: str) -> WorkflowState:
 
         """Approve a workflow that is waiting for human approval."""
@@ -939,6 +993,42 @@ class IncidentWorkflow:
     ) -> WorkflowState:
 
         """Execute the already-verified action stored in workflow state."""
+
+        if state.get("status") == "STOPPED":
+            state["error"] = state.get(
+                "error",
+                "Workflow was stopped before action execution.",
+            )
+
+            self.tracer.record(
+                "action_execution_prevented",
+                "orchestrator",
+                {
+                    "incident_id": state.get(
+                        "incident",
+                        {},
+                    ).get(
+                        "incident_id",
+                        "unknown",
+                    ),
+                    "reason": state["error"],
+                },
+            )
+
+            workflow_id = state.get(
+                "incident",
+                {},
+            ).get(
+                "incident_id",
+                "unknown",
+            )
+
+            self.state_store.save(
+                workflow_id,
+                state,
+            )
+
+            return state
 
         incident_data = state.get("incident", {})
 

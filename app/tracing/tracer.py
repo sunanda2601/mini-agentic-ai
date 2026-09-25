@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 import time
+import uuid
 
 
 class Tracer:
@@ -48,6 +49,7 @@ class Tracer:
         )
 
         event = {
+            "audit_id": str(uuid.uuid4()),
             "timestamp": datetime.now(
                 timezone.utc
             ).isoformat(),

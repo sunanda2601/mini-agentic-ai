@@ -12,6 +12,8 @@ class WorkflowState(TypedDict, total=False):
 
     verification: dict[str, Any]
 
+    approval: dict[str, Any]
+
     action_result: dict[str, Any]
 
     status: str

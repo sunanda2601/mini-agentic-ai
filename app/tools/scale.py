@@ -15,7 +15,7 @@ def simulate_scale(
     request: SimulateScaleRequest,
 ) -> SimulateScaleResponse:
 
-    if request.environment != "production":
+    if request.environment not in {"production", "staging"}:
         return SimulateScaleResponse(
             success=False,
             tenant_id=request.tenant_id,

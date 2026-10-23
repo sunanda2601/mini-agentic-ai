@@ -13,7 +13,7 @@ LOG_DIR = Path("data/logs")
 def get_logs(request: GetLogsRequest) -> GetLogsResponse:
     log_file = LOG_DIR / f"{request.service}.log"
 
-    if request.environment != "production":
+    if request.environment not in {"production", "staging"}:
         return GetLogsResponse(
             success=False,
             tenant_id=request.tenant_id,

@@ -15,7 +15,7 @@ def get_dependency_graph(
     request: GetDependencyGraphRequest,
 ) -> GetDependencyGraphResponse:
 
-    if request.environment != "production":
+    if request.environment not in {"production", "staging"}:
         return GetDependencyGraphResponse(
             success=False,
             tenant_id=request.tenant_id,

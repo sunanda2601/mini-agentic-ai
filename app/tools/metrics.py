@@ -15,9 +15,7 @@ def get_metrics(
     request: GetMetricsRequest,
 ) -> GetMetricsResponse:
 
-    metrics_file = METRICS_DIR / f"{request.service}.json"
-
-    if request.environment != "production":
+    if request.environment not in {"production", "staging"}:
         return GetMetricsResponse(
             success=False,
             tenant_id=request.tenant_id,
@@ -32,6 +30,7 @@ def get_metrics(
             ),
         )
 
+    metrics_file = METRICS_DIR / f"{request.service}.json"
     if not metrics_file.exists():
         return GetMetricsResponse(
             success=False,

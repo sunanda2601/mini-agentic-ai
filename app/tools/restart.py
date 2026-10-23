@@ -15,7 +15,7 @@ def simulate_restart(
     request: SimulateRestartRequest,
 ) -> SimulateRestartResponse:
 
-    if request.environment != "production":
+    if request.environment not in {"production", "staging"}:
         return SimulateRestartResponse(
             success=False,
             tenant_id=request.tenant_id,

@@ -87,3 +87,20 @@ def test_clear_resets_persistent_trace(tmp_path):
     assert len(trace) == 1
     assert trace[0]["previous_hash"] == Tracer.GENESIS_HASH
     assert Tracer.verify_trace(trace) is True
+
+
+def test_stale_tracer_does_not_break_existing_hash_chain(tmp_path):
+    audit_file = tmp_path / "shared-audit.jsonl"
+
+    first = Tracer(audit_path=str(audit_file))
+    first.record("started", "graph", {})
+
+    second = Tracer(audit_path=str(audit_file))
+
+    first.record("first_update", "graph", {})
+    second.record("second_update", "graph", {})
+
+    # Every event should link to the event immediately before it.
+    trace = Tracer(audit_path=str(audit_file)).export_trace()
+
+    assert Tracer.verify_trace(trace) is True

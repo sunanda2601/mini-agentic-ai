@@ -5,6 +5,8 @@ from typing import Any
 import copy
 import hashlib
 import json
+import math
+import threading
 import time
 import uuid
 
@@ -25,6 +27,10 @@ class Tracer:
 
     GENESIS_HASH = "0" * 64
 
+    # Shared locks coordinate tracer instances within this Python process.
+    _file_locks_guard = threading.Lock()
+    _file_locks: dict[str, threading.RLock] = {}
+
     def __init__(self, audit_path: str | None = None):
         self.events: list[dict[str, Any]] = []
         self._last_hash = self.GENESIS_HASH
@@ -33,21 +39,36 @@ class Tracer:
         if self.audit_path is not None:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if self.audit_path.exists():
-                self.events = self._read_persisted_trace()
-                self.verify_trace(self.events)
+            with self._get_file_lock(self.audit_path):
+                if self.audit_path.exists():
+                    self.events = self._read_persisted_trace()
+                    self.verify_trace(self.events)
 
-                if self.events:
-                    self._last_hash = self.events[-1]["event_hash"]
+                    if self.events:
+                        self._last_hash = self.events[-1]["event_hash"]
+
+    @classmethod
+    def _get_file_lock(cls, audit_path: Path) -> threading.RLock:
+        """Return a shared in-process lock for the given audit file."""
+        key = str(audit_path.resolve())
+
+        with cls._file_locks_guard:
+            if key not in cls._file_locks:
+                cls._file_locks[key] = threading.RLock()
+
+            return cls._file_locks[key]
 
     def _redact(self, value: Any) -> Any:
+        """Recursively redact sensitive dictionary values."""
         if isinstance(value, dict):
             redacted = {}
+
             for key, item in value.items():
-                if key.lower() in self.SENSITIVE_KEYS:
+                if isinstance(key, str) and key.lower() in self.SENSITIVE_KEYS:
                     redacted[key] = "[REDACTED]"
                 else:
                     redacted[key] = self._redact(item)
+
             return redacted
 
         if isinstance(value, (list, tuple)):
@@ -57,6 +78,7 @@ class Tracer:
 
     @staticmethod
     def _canonical_json(event: dict[str, Any]) -> str:
+        """Serialize an event deterministically for hashing."""
         try:
             return json.dumps(
                 event,
@@ -72,17 +94,22 @@ class Tracer:
 
     @classmethod
     def _calculate_hash(cls, event: dict[str, Any]) -> str:
+        """Calculate the event hash, excluding its own event_hash field."""
         event_data = {
             key: value
             for key, value in event.items()
             if key != "event_hash"
         }
+
         serialized = cls._canonical_json(event_data)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _read_persisted_trace(self) -> list[dict[str, Any]]:
         """Load JSONL events, rejecting malformed records."""
         events = []
+
+        if self.audit_path is None:
+            return events
 
         try:
             with self.audit_path.open("r", encoding="utf-8") as file:
@@ -99,7 +126,8 @@ class Tracer:
 
                     if not isinstance(event, dict):
                         raise TraceIntegrityError(
-                            f"Audit log line {line_number} is not an event object."
+                            f"Audit log line {line_number} "
+                            "is not an event object."
                         )
 
                     events.append(event)
@@ -118,83 +146,118 @@ class Tracer:
         details: dict[str, Any] | None = None,
         latency_ms: float | None = None,
     ) -> None:
+        """Record an event using the latest persisted hash-chain head."""
         if not isinstance(event_type, str) or not event_type.strip():
             raise ValueError("event_type must be a non-empty string.")
 
         if not isinstance(component, str) or not component.strip():
             raise ValueError("component must be a non-empty string.")
 
-        event = {
-            "audit_id": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_type": event_type,
-            "component": component,
-            "latency_ms": latency_ms,
-            "details": self._redact(details or {}),
-            "previous_hash": self._last_hash,
-        }
-        event["event_hash"] = self._calculate_hash(event)
+        if details is not None and not isinstance(details, dict):
+            raise ValueError("details must be a dictionary or None.")
 
-        # Persist before updating memory, so a failed write is reported.
-        if self.audit_path is not None:
-            try:
-                with self.audit_path.open("a", encoding="utf-8") as file:
-                    file.write(
-                        json.dumps(
-                            event,
-                            sort_keys=True,
-                            ensure_ascii=False,
-                            allow_nan=False,
+        if latency_ms is not None:
+            if (
+                isinstance(latency_ms, bool)
+                or not isinstance(latency_ms, (int, float))
+                or not math.isfinite(latency_ms)
+                or latency_ms < 0
+            ):
+                raise ValueError(
+                    "latency_ms must be a finite, non-negative number or None."
+                )
+
+        lock = (
+            self._get_file_lock(self.audit_path)
+            if self.audit_path is not None
+            else threading.RLock()
+        )
+
+        with lock:
+            if self.audit_path is not None:
+                if self.audit_path.exists():
+                    persisted_events = self._read_persisted_trace()
+                    self.verify_trace(persisted_events)
+                else:
+                    persisted_events = []
+
+                # Refresh in-memory state to avoid using a stale hash.
+                self.events = persisted_events
+                self._last_hash = (
+                    persisted_events[-1]["event_hash"]
+                    if persisted_events
+                    else self.GENESIS_HASH
+                )
+
+            event = {
+                "audit_id": str(uuid.uuid4()),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event_type": event_type,
+                "component": component,
+                "latency_ms": latency_ms,
+                "details": self._redact(details or {}),
+                "previous_hash": self._last_hash,
+            }
+            event["event_hash"] = self._calculate_hash(event)
+
+            # Persist before updating in-memory state.
+            if self.audit_path is not None:
+                try:
+                    with self.audit_path.open(
+                        "a",
+                        encoding="utf-8",
+                        newline="\n",
+                    ) as file:
+                        file.write(
+                            json.dumps(
+                                event,
+                                sort_keys=True,
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            )
+                            + "\n"
                         )
-                        + "\n"
-                    )
-                    file.flush()
-            except (OSError, TypeError, ValueError) as exc:
-                raise TraceIntegrityError(
-                    f"Could not persist audit event: {exc}"
-                ) from exc
+                        file.flush()
+                except (OSError, TypeError, ValueError) as exc:
+                    raise TraceIntegrityError(
+                        f"Could not persist audit event: {exc}"
+                    ) from exc
 
-        self.events.append(event)
-        self._last_hash = event["event_hash"]
+            self.events.append(event)
+            self._last_hash = event["event_hash"]
 
     def get_events(self) -> list[dict[str, Any]]:
+        """Return a deep copy of in-memory events."""
         return copy.deepcopy(self.events)
 
     def clear(self) -> None:
-        if self.audit_path is not None:
-            try:
-                with self.audit_path.open("w", encoding="utf-8"):
-                    pass
-            except OSError as exc:
-                raise TraceIntegrityError(
-                    f"Could not clear audit log: {exc}"
-                ) from exc
+        """Clear the trace and reset its hash chain."""
+        lock = (
+            self._get_file_lock(self.audit_path)
+            if self.audit_path is not None
+            else threading.RLock()
+        )
 
-        self.events.clear()
-        self._last_hash = self.GENESIS_HASH
+        with lock:
+            if self.audit_path is not None:
+                try:
+                    with self.audit_path.open(
+                        "w",
+                        encoding="utf-8",
+                        newline="\n",
+                    ):
+                        pass
+                except OSError as exc:
+                    raise TraceIntegrityError(
+                        f"Could not clear audit log: {exc}"
+                    ) from exc
 
-    def start_timer(self) -> float:
-        return time.perf_counter()
-
-    def elapsed_ms(self, start_time: float) -> float:
-        return round((time.perf_counter() - start_time) * 1000, 2)
-
-    def estimate_cost(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        input_cost_per_1k: float = 0.0,
-        output_cost_per_1k: float = 0.0,
-    ) -> float:
-        input_cost = (input_tokens / 1000) * input_cost_per_1k
-        output_cost = (output_tokens / 1000) * output_cost_per_1k
-        return round(input_cost + output_cost, 6)
-
-    def export_trace(self) -> list[dict[str, Any]]:
-        return copy.deepcopy(self.events)
+            self.events.clear()
+            self._last_hash = self.GENESIS_HASH
 
     @classmethod
     def verify_trace(cls, trace: list[dict[str, Any]]) -> bool:
+        """Verify event structure, uniqueness, hashes, and chain continuity."""
         if not isinstance(trace, list):
             raise TraceIntegrityError("Trace must be a list.")
 
@@ -226,6 +289,7 @@ class Tracer:
                 )
 
             audit_id = event["audit_id"]
+
             if not isinstance(audit_id, str) or not audit_id:
                 raise TraceIntegrityError(
                     f"Event {index} has an invalid audit_id."
@@ -235,6 +299,7 @@ class Tracer:
                 raise TraceIntegrityError(
                     f"Duplicate audit_id at event {index}."
                 )
+
             seen_audit_ids.add(audit_id)
 
             if event["previous_hash"] != previous_hash:
@@ -243,9 +308,10 @@ class Tracer:
                 )
 
             expected_hash = cls._calculate_hash(event)
+
             if event["event_hash"] != expected_hash:
                 raise TraceIntegrityError(
-                    f"Event integrity check failed at event {index}."
+                    f"Event hash mismatch at event {index}."
                 )
 
             previous_hash = event["event_hash"]
@@ -256,10 +322,62 @@ class Tracer:
         self,
         trace: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        candidate = (
-            self.export_trace()
-            if trace is None
-            else copy.deepcopy(trace)
-        )
+        """Validate a trace and return a copy for inspection."""
+        candidate = self.get_events() if trace is None else copy.deepcopy(trace)
         self.verify_trace(candidate)
         return candidate
+
+    def export_trace(self) -> list[dict[str, Any]]:
+        """Return a copy of the current in-memory trace."""
+        return self.get_events()
+
+    def estimate_cost(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        input_cost_per_1k: float,
+        output_cost_per_1k: float,
+    ) -> float:
+        """Estimate inference cost from token counts and per-1K-token rates."""
+        values = (
+            input_cost_per_1k,
+            output_cost_per_1k,
+        )
+
+        if (
+            isinstance(input_tokens, bool)
+            or not isinstance(input_tokens, int)
+            or input_tokens < 0
+        ):
+            raise ValueError("input_tokens must be a non-negative integer.")
+
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens < 0
+        ):
+            raise ValueError("output_tokens must be a non-negative integer.")
+
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            for value in values
+        ):
+            raise ValueError(
+                "Token costs must be finite, non-negative numbers."
+            )
+
+        input_cost = (input_tokens / 1000) * input_cost_per_1k
+        output_cost = (output_tokens / 1000) * output_cost_per_1k
+
+        return round(input_cost + output_cost, 8)
+
+    def start_timer(self) -> float:
+        """Start a high-resolution timer."""
+        return time.perf_counter()
+
+    def elapsed_ms(self, start_time: float) -> float:
+        """Return elapsed time in milliseconds, rounded to two decimals."""
+        return round((time.perf_counter() - start_time) * 1000, 2)

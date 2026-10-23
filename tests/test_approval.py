@@ -34,17 +34,22 @@ def create_waiting_state(workflow_id: str) -> dict:
     }
 
 
-def fake_restart(_request):
-    return SimpleNamespace(
+
+def fake_restart(request):
+    from app.tools.schemas import SimulateRestartResponse
+
+    return SimulateRestartResponse(
         success=True,
+        tenant_id=request.tenant_id,
+        service=request.service,
+        environment=request.environment,
+        action="restart",
         simulated=True,
+        message="Restart simulated",
+        version="1.0.0",
         error=None,
-        model_dump=lambda: {
-            "success": True,
-            "simulated": True,
-            "error": None,
-        },
     )
+
 
 
 def test_human_approval_executes_verified_action(

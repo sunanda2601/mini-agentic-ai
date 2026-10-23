@@ -1,5 +1,6 @@
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,12 @@ from app.safety.policies import (
 )
 from app.tools.restart import simulate_restart
 from app.tools.scale import simulate_scale
+from app.tools.idempotency import IdempotencyStore
 from app.tools.schemas import (
     SimulateRestartRequest,
     SimulateScaleRequest,
+    SimulateRestartResponse,
+    SimulateScaleResponse,
 )
 from app.tracing.tracer import Tracer
 from app.version import (
@@ -566,21 +570,64 @@ class IncidentWorkflow:
                 try:
                     attempt_start = time.perf_counter()
 
-                    if target_tool == "simulate_restart":
-                        action_result = simulate_restart(
-                            SimulateRestartRequest(
-                                service=target_service,
-                                environment=target_env,
-                            )
+                    idempotency_directory = (
+                        Path(self.state_store.directory) / "idempotency"
+                    )
+                    idempotency_store = IdempotencyStore(
+                        str(
+                            idempotency_directory
+                            / f"{hashlib.sha256(workflow_id.encode('utf-8')).hexdigest()}.json"
                         )
-                    else:
-                        action_result = simulate_scale(
-                            SimulateScaleRequest(
-                                service=target_service,
-                                replicas=action["replicas"],
-                                environment=target_env,
+                    )
+
+                    action_payload = {
+                        "workflow_id": workflow_id,
+                        "tool": target_tool,
+                        "tenant_id": incident_data.get("tenant_id", "demo-tenant"),
+                        "service": target_service,
+                        "environment": target_env,
+                    }
+                    if target_tool == "simulate_scale":
+                        action_payload["replicas"] = action["replicas"]
+
+                    action_key = hashlib.sha256(
+                        json.dumps(
+                            action_payload,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+
+                    def execute_tool() -> dict[str, Any]:
+                        if target_tool == "simulate_restart":
+                            result = simulate_restart(
+                                SimulateRestartRequest(
+                                    tenant_id=action_payload["tenant_id"],
+                                    service=target_service,
+                                    environment=target_env,
+                                )
                             )
-                        )
+                        else:
+                            result = simulate_scale(
+                                SimulateScaleRequest(
+                                    tenant_id=action_payload["tenant_id"],
+                                    service=target_service,
+                                    replicas=action["replicas"],
+                                    environment=target_env,
+                                )
+                            )
+                        return result.model_dump()
+
+                    action_result_data = idempotency_store.execute_once(
+                        action_key,
+                        action_payload,
+                        execute_tool,
+                    )
+                    action_result = (
+                        SimulateRestartResponse.model_validate(action_result_data)
+                        if target_tool == "simulate_restart"
+                        else SimulateScaleResponse.model_validate(action_result_data)
+                    )
 
                     elapsed_seconds = time.perf_counter() - attempt_start
                     if elapsed_seconds > settings.tool_timeout_seconds:

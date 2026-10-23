@@ -1,3 +1,4 @@
+
 import pytest
 
 from app.orchestration.graph import IncidentWorkflow
@@ -48,21 +49,34 @@ def test_invalid_transition_raises_error():
     # Cannot jump from PLANNING directly to APPROVED
     with pytest.raises(IllegalStateTransitionError) as exc_info:
         validate_transition(State.PLANNING, State.APPROVED)
-    assert "Illegal transition from 'PLANNING' to 'APPROVED'" in str(exc_info.value)
+
+    assert "Illegal transition from 'PLANNING' to 'APPROVED'" in str(
+        exc_info.value
+    )
 
 
 def test_cannot_bypass_approval_state():
     # Attempting to jump from WAITING_FOR_APPROVAL to COMPLETED is blocked
     with pytest.raises(IllegalStateTransitionError) as exc_info:
         validate_transition(State.WAITING_FOR_APPROVAL, State.COMPLETED)
-    assert "Illegal transition from 'WAITING_FOR_APPROVAL' to 'COMPLETED'" in str(exc_info.value)
+
+    assert "Illegal transition from 'WAITING_FOR_APPROVAL' to 'COMPLETED'" in str(
+        exc_info.value
+    )
 
 
 def test_terminal_states_have_no_transitions():
-    for terminal in (State.COMPLETED, State.FAILED, State.STOPPED, State.REJECTED):
+    for terminal in (
+        State.COMPLETED,
+        State.FAILED,
+        State.STOPPED,
+        State.REJECTED,
+    ):
         assert len(TRANSITIONS[terminal]) == 0
+
         with pytest.raises(IllegalStateTransitionError):
             validate_transition(terminal, State.PLANNING)
+
         with pytest.raises(IllegalStateTransitionError):
             validate_transition(terminal, State.APPROVED)
 
@@ -76,6 +90,7 @@ def test_stoppable_states():
         State.WAITING_FOR_APPROVAL,
         State.APPROVED,
     ]
+
     for state in stoppable:
         assert can_transition(state, State.STOPPED)[0] is True
 
@@ -90,7 +105,10 @@ def test_execution_boundary_blocks_unapproved_execution(tmp_path, monkeypatch):
             "simulate_restart must not be called when status is unapproved."
         )
 
-    monkeypatch.setattr("app.orchestration.graph.simulate_restart", fail_if_called)
+    monkeypatch.setattr(
+        "app.orchestration.graph.simulate_restart",
+        fail_if_called,
+    )
 
     unapproved_state = {
         "incident": {
@@ -131,7 +149,10 @@ def test_execution_boundary_blocks_approved_status_without_human_approval(
             "simulate_restart must not be called without verified human approval."
         )
 
-    monkeypatch.setattr("app.orchestration.graph.simulate_restart", fail_if_called)
+    monkeypatch.setattr(
+        "app.orchestration.graph.simulate_restart",
+        fail_if_called,
+    )
 
     tampered_state = {
         "incident": {
@@ -177,9 +198,16 @@ def test_approved_scale_action_calls_scale_tool(tmp_path, monkeypatch):
 
         def model_dump(self):
             return {
-                "success": self.success,
-                "message": self.message,
-                "simulated": self.simulated,
+                "success": True,
+                "tenant_id": "demo-tenant",
+                "service": "payment-service",
+                "environment": "staging",
+                "requested_replicas": 3,
+                "action": "scale",
+                "simulated": True,
+                "message": "Scale simulated",
+                "version": "1.0.0",
+                "error": None,
             }
 
     def fake_scale(request):
@@ -232,9 +260,7 @@ def test_execution_boundary_blocks_stopped_workflow(
 ):
     """A stopped workflow must never execute its proposed action."""
     workflow = IncidentWorkflow()
-    workflow.state_store = WorkflowStateStore(
-        directory=str(tmp_path)
-    )
+    workflow.state_store = WorkflowStateStore(directory=str(tmp_path))
 
     def fail_if_called(_request):
         raise AssertionError(

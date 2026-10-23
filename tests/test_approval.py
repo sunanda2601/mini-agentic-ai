@@ -243,3 +243,40 @@ def test_completed_workflow_cannot_be_stopped(
 
     with pytest.raises(ValueError):
         workflow.stop(workflow_id)
+
+
+def test_stopped_workflow_cannot_be_approved(
+    tmp_path,
+    monkeypatch,
+):
+    workflow = IncidentWorkflow()
+    workflow.state_store = WorkflowStateStore(
+        directory=str(tmp_path)
+    )
+
+    workflow_id = "stopped-approval-test"
+
+    state = create_waiting_state(workflow_id)
+    workflow.state_store.save(workflow_id, state)
+
+    workflow.stop(
+        workflow_id,
+        reason="Operator stopped the workflow.",
+    )
+
+    def fail_if_called(_request):
+        raise AssertionError(
+            "A stopped workflow must not execute an action."
+        )
+
+    monkeypatch.setattr(
+        "app.orchestration.graph.simulate_restart",
+        fail_if_called,
+    )
+
+    with pytest.raises(ValueError):
+        workflow.approve(workflow_id)
+
+    saved_state = workflow.state_store.load(workflow_id)
+    assert saved_state["status"] == "STOPPED"
+    assert saved_state["approval"]["status"] == "STOPPED"

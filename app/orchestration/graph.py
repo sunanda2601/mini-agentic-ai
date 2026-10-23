@@ -1,5 +1,8 @@
 
+import hashlib
 import time
+from pathlib import Path
+from typing import Any
 
 from app.config import settings
 from app.agents.planner import PlannerAgent
@@ -26,38 +29,69 @@ from app.tools.schemas import (
     SimulateScaleRequest,
 )
 from app.tracing.tracer import Tracer
-from app.version import APP_VERSION, AGENT_VERSIONS, TOOL_VERSIONS
+from app.version import (
+    APP_VERSION,
+    AGENT_VERSIONS,
+    TOOL_VERSIONS,
+)
 
 
 class IncidentWorkflow:
-    def __init__(self):
+    def __init__(self, audit_directory: str | None = None):
         self.planner = PlannerAgent()
         self.investigator = InvestigatorAgent()
         self.ops = OpsAgent()
         self.verifier = VerifierAgent()
         self.tracer = Tracer()
         self.state_store = WorkflowStateStore()
+        # If omitted, audit files are stored under the active state-store directory.
+        # Resolving this lazily also keeps tests that replace state_store isolated.
+        self.audit_directory = Path(audit_directory) if audit_directory else None
+        self._workflow_tracers: dict[str, Tracer] = {}
 
-    def _transition_to(
-        self,
-        state: WorkflowState,
-        target: State | str,
-    ) -> None:
-        """Validate and apply a legal workflow state transition."""
+    def _get_tracer(self, workflow_id: str) -> Tracer:
+        """Return the persistent, hash-verified tracer for one workflow."""
+        if not isinstance(workflow_id, str) or not workflow_id.strip():
+            raise ValueError("workflow_id must be a non-empty string.")
+
+        if workflow_id not in self._workflow_tracers:
+            base_directory = self.audit_directory
+            if base_directory is None:
+                base_directory = Path(self.state_store.directory) / "audit"
+
+            # Hash the identifier to prevent path traversal and unsafe filenames.
+            safe_name = hashlib.sha256(workflow_id.encode("utf-8")).hexdigest()
+            audit_path = base_directory / f"{safe_name}.jsonl"
+            self._workflow_tracers[workflow_id] = Tracer(
+                audit_path=str(audit_path)
+            )
+
+        self.tracer = self._workflow_tracers[workflow_id]
+        return self.tracer
+
+    def _transition_to(self, state: WorkflowState, target: State | str) -> None:
+        """Enforces legal state machine transitions and updates state status."""
         current = state.get("status")
         target_state = validate_transition(current, target)
         state["status"] = target_state.value
 
     def run(self, incident: Incident) -> WorkflowState:
+        self._get_tracer(incident.incident_id)
         state: WorkflowState = {
             "incident": incident.model_dump(),
             "status": None,
             "error": None,
         }
 
+        # Transition into initial state
         self._transition_to(state, State.PLANNING)
+
+        # Persist initial workflow state.
         self.state_store.save(incident.incident_id, state)
 
+        # =========================================================
+        # Workflow Started
+        # =========================================================
         self.tracer.record(
             "workflow_started",
             "orchestrator",
@@ -87,7 +121,9 @@ class IncidentWorkflow:
             },
         )
 
+        # =========================================================
         # 1. Planner
+        # =========================================================
         planner_start = self.tracer.start_timer()
         plan = self.planner.create_plan(incident)
         planner_latency = self.tracer.elapsed_ms(planner_start)
@@ -103,7 +139,9 @@ class IncidentWorkflow:
         self._transition_to(state, State.INVESTIGATING)
         self.state_store.save(incident.incident_id, state)
 
-        # 2. Investigator
+        # =========================================================
+        # 2. Investigator / RAG
+        # =========================================================
         investigator_start = self.tracer.start_timer()
         investigation = self.investigator.investigate(incident)
         investigator_latency = self.tracer.elapsed_ms(investigator_start)
@@ -117,9 +155,9 @@ class IncidentWorkflow:
                 "logs_retrieved": len(
                     investigation.payload.get("logs", {}).get("logs", [])
                 ),
-                "metrics_available": investigation.payload.get(
-                    "metrics", {}
-                ).get("success", False),
+                "metrics_available": investigation.payload.get("metrics", {}).get(
+                    "success", False
+                ),
                 "evidence_count": len(
                     investigation.payload.get("evidence", [])
                 ),
@@ -134,19 +172,20 @@ class IncidentWorkflow:
         self._transition_to(state, State.ACTION_PROPOSED)
         self.state_store.save(incident.incident_id, state)
 
+        # =========================================================
         # 3. Ops
+        # =========================================================
         ops_start = self.tracer.start_timer()
         proposal = self.ops.propose_action(investigation)
         ops_latency = self.tracer.elapsed_ms(ops_start)
-        proposed_action = proposal.payload["proposed_action"]
 
         self.tracer.record(
             "agent_completed",
             "ops",
             {
                 "message_type": proposal.message_type,
-                "tool": proposed_action["tool"],
-                "service": proposed_action["service"],
+                "tool": proposal.payload["proposed_action"]["tool"],
+                "service": proposal.payload["proposed_action"]["service"],
             },
             latency_ms=ops_latency,
         )
@@ -155,7 +194,9 @@ class IncidentWorkflow:
         self._transition_to(state, State.VERIFYING)
         self.state_store.save(incident.incident_id, state)
 
-        # 4. Verifier / safety
+        # =========================================================
+        # 4. Verifier / Safety
+        # =========================================================
         verifier_start = self.tracer.start_timer()
         verification = self.verifier.verify(proposal)
         verifier_latency = self.tracer.elapsed_ms(verifier_start)
@@ -172,7 +213,7 @@ class IncidentWorkflow:
                     ["restart payment-db"]
                     if (
                         verification.payload.get("approved")
-                        and proposed_action.get("service") == "payment-service"
+                        and proposal.payload["service"] == "payment-service"
                     )
                     else []
                 ),
@@ -181,12 +222,17 @@ class IncidentWorkflow:
         )
 
         state["verification"] = verification.model_dump()
+
+        # =========================================================
+        # Verification Decision Handling
+        # =========================================================
         verification_decision = verification.payload.get(
-            "decision",
-            PolicyDecision.BLOCK.value,
+            "decision", PolicyDecision.BLOCK.value
         )
 
-        # Case A: Human approval is required.
+        # ---------------------------------------------------------
+        # Case A: Explicit human approval required (e.g. production or database)
+        # ---------------------------------------------------------
         if verification_decision == PolicyDecision.REQUIRE_APPROVAL.value:
             self._transition_to(state, State.WAITING_FOR_APPROVAL)
             state["error"] = None
@@ -202,7 +248,7 @@ class IncidentWorkflow:
                 "orchestrator",
                 {
                     "incident_id": incident.incident_id,
-                    "service": proposed_action["service"],
+                    "service": proposal.payload["service"],
                     "policy_ids": verification.payload.get("policy_ids", []),
                     "reasons": verification.payload.get("reasons", []),
                 },
@@ -211,14 +257,13 @@ class IncidentWorkflow:
             self.state_store.save(incident.incident_id, state)
             return state
 
-        # Case B: The action is blocked by safety policy.
+        # ---------------------------------------------------------
+        # Case B: Safety violation or hard block
+        # ---------------------------------------------------------
         if verification_decision == PolicyDecision.BLOCK.value:
             self._transition_to(state, State.FAILED)
             state["error"] = "; ".join(
-                verification.payload.get(
-                    "reasons",
-                    ["Action blocked by safety policy."],
-                )
+                verification.payload.get("reasons", ["Action blocked by safety policy."])
             )
             state["approval"] = {
                 "required": False,
@@ -238,17 +283,17 @@ class IncidentWorkflow:
             self.state_store.save(incident.incident_id, state)
             return state
 
-        # Case C: The action is allowed without human approval.
+        # ---------------------------------------------------------
+        # Case C: Verified and allowed autonomously (e.g. staging)
+        # ---------------------------------------------------------
         state["approval"] = {
             "required": False,
             "status": "NOT_REQUIRED",
         }
-
         self._transition_to(state, State.APPROVED)
         self.state_store.save(incident.incident_id, state)
 
         return self._execute_approved_action(state)
-
 
     def stop(
         self,
@@ -257,14 +302,15 @@ class IncidentWorkflow:
     ) -> WorkflowState:
         """Stop a workflow before its action is executed."""
         state: WorkflowState = self.state_store.load(workflow_id)
+        self._get_tracer(workflow_id)
         previous_status = state.get("status")
 
+        # Validate that state transition to STOPPED is legal
         try:
             self._transition_to(state, State.STOPPED)
         except IllegalStateTransitionError as exc:
             raise ValueError(
-                f"Workflow '{workflow_id}' cannot be stopped "
-                f"from status '{previous_status}'."
+                f"Workflow '{workflow_id}' cannot be stopped from status '{previous_status}'."
             ) from exc
 
         state["error"] = reason
@@ -283,19 +329,19 @@ class IncidentWorkflow:
             "orchestrator",
             {
                 "incident_id": workflow_id,
-                "previous_status": previous_status,
-                "stopped_by": "operator",
+                "actor": "operator",
                 "reason": reason,
+                "previous_status": previous_status,
             },
         )
 
         self.state_store.save(workflow_id, state)
         return state
 
-
     def approve(self, workflow_id: str) -> WorkflowState:
         """Approve a workflow that is waiting for human approval."""
         state: WorkflowState = self.state_store.load(workflow_id)
+        self._get_tracer(workflow_id)
 
         if state.get("status") != State.WAITING_FOR_APPROVAL.value:
             raise ValueError(
@@ -318,6 +364,7 @@ class IncidentWorkflow:
             "approved_by": "human",
         }
 
+        # Transition to APPROVED legally
         self._transition_to(state, State.APPROVED)
         state["error"] = None
 
@@ -344,6 +391,7 @@ class IncidentWorkflow:
     ) -> WorkflowState:
         """Reject a workflow that is waiting for human approval."""
         state: WorkflowState = self.state_store.load(workflow_id)
+        self._get_tracer(workflow_id)
 
         if state.get("status") != State.WAITING_FOR_APPROVAL.value:
             raise ValueError(
@@ -367,6 +415,7 @@ class IncidentWorkflow:
             "rejection_reason": reason,
         }
 
+        # Transition to REJECTED legally
         self._transition_to(state, State.REJECTED)
         state["error"] = reason
 
@@ -387,45 +436,26 @@ class IncidentWorkflow:
         self.state_store.save(workflow_id, state)
         return state
 
-    def _execute_approved_action(
-        self,
-        state: WorkflowState,
-    ) -> WorkflowState:
+    def _execute_approved_action(self, state: WorkflowState) -> WorkflowState:
         """
-        Execute a verified and approved action.
-
-        Revalidates safety invariants, scope boundaries, and approval
-        independently before invoking a tool.
+        Execute verified and approved action.
+        INDEPENDENT EXECUTION BOUNDARY:
+        Validates safety invariants, scope boundaries, and human approval independently
+        before invoking any tool.
         """
-        workflow_id = state.get("incident", {}).get(
-            "incident_id",
-            "unknown",
-        )
+        workflow_id = state.get("incident", {}).get("incident_id", "unknown")
 
-        # Record the stop event before returning.
         if state.get("status") == State.STOPPED.value:
             state["error"] = state.get(
-                "error",
-                "Workflow was stopped before action execution.",
+                "error", "Workflow was stopped before action execution."
             )
-
-            self.tracer.record(
-                "action_execution_prevented",
-                "orchestrator",
-                {
-                    "incident_id": workflow_id,
-                    "reason": state["error"],
-                },
-            )
-
             self.state_store.save(workflow_id, state)
             return state
 
-        # Execution requires APPROVED state.
+        # Guard: State must be APPROVED before execution can proceed
         if state.get("status") != State.APPROVED.value:
             raise IllegalStateTransitionError(
-                "Execution boundary rejected: Cannot execute action "
-                f"from status '{state.get('status')}'. "
+                f"Execution boundary rejected: Cannot execute action from status '{state.get('status')}'. "
                 f"Workflow must be in '{State.APPROVED.value}' state."
             )
 
@@ -436,10 +466,7 @@ class IncidentWorkflow:
 
         if not action:
             self._transition_to(state, State.FAILED)
-            state["error"] = (
-                "Execution boundary rejected: "
-                "Action is missing from workflow state."
-            )
+            state["error"] = "Execution boundary rejected: Action is missing from workflow state."
             self.state_store.save(workflow_id, state)
             return state
 
@@ -447,49 +474,42 @@ class IncidentWorkflow:
         target_tool = action.get("tool")
         target_env = incident_data.get("environment")
 
-        # Check 1: Action service must match incident service.
+        # Independent Boundary Check 1: Action service must match incident service
         if not target_service or target_service != incident_data.get("service"):
             self._transition_to(state, State.FAILED)
             state["error"] = (
-                f"Execution boundary rejected: Action service "
-                f"'{target_service}' does not match incident service "
-                f"'{incident_data.get('service')}'."
+                f"Execution boundary rejected: Action service '{target_service}' "
+                f"does not match incident service '{incident_data.get('service')}'."
             )
             self.state_store.save(workflow_id, state)
             return state
 
-        # Check 2: Prevent cross-environment actions.
-        if (
-            action.get("environment")
-            and action["environment"] != target_env
-        ):
+        # Independent Boundary Check 2: Cross-environment guard
+        if action.get("environment") and action["environment"] != target_env:
             self._transition_to(state, State.FAILED)
             state["error"] = (
-                "Execution boundary rejected: Cross-environment action "
-                f"detected. Action environment '{action.get('environment')}' "
-                f"!= incident '{target_env}'."
+                f"Execution boundary rejected: Cross-environment action detected. "
+                f"Action environment '{action.get('environment')}' != incident '{target_env}'."
             )
             self.state_store.save(workflow_id, state)
             return state
 
-        # Check 3: Re-evaluate central policy at execution time.
+        # Independent Boundary Check 3: Central policy re-evaluation
         boundary_policy = check_action_policy(
             tool=target_tool,
             service=target_service,
             environment=target_env,
             action_environment=action.get("environment"),
         )
-
         if boundary_policy.decision == PolicyDecision.BLOCK:
             self._transition_to(state, State.FAILED)
             state["error"] = (
-                "Execution boundary blocked: "
-                f"{'; '.join(boundary_policy.reasons)}"
+                f"Execution boundary blocked: {'; '.join(boundary_policy.reasons)}"
             )
             self.state_store.save(workflow_id, state)
             return state
 
-        # Check 4: Production actions require human approval.
+        # Independent Boundary Check 4: Production actions require verified human approval
         if target_env == "production":
             approval = state.get("approval", {})
             if (
@@ -498,13 +518,12 @@ class IncidentWorkflow:
             ):
                 self._transition_to(state, State.FAILED)
                 state["error"] = (
-                    "Execution boundary rejected: Production action "
-                    "lacks required human approval."
+                    "Execution boundary rejected: Production action lacks required human approval."
                 )
                 self.state_store.save(workflow_id, state)
                 return state
 
-        # Check 5: Database actions require approval.
+        # Independent Boundary Check 5: Database restart requires verified approval
         if is_database_service(target_service):
             approval = state.get("approval", {})
             if (
@@ -513,13 +532,13 @@ class IncidentWorkflow:
             ):
                 self._transition_to(state, State.FAILED)
                 state["error"] = (
-                    "Execution boundary rejected: Database restart for "
-                    f"'{target_service}' lacks required approval."
+                    f"Execution boundary rejected: Database restart for '{target_service}' "
+                    "lacks required approval."
                 )
                 self.state_store.save(workflow_id, state)
                 return state
 
-        # Check 6: Scale replicas must be a positive integer.
+        # Validate scale parameters before invoking the tool.
         if target_tool == "simulate_scale":
             replicas = action.get("replicas")
 
@@ -530,19 +549,19 @@ class IncidentWorkflow:
             ):
                 self._transition_to(state, State.FAILED)
                 state["error"] = (
-                    "Invalid scale action: replicas must be "
-                    "a positive integer."
+                    "Invalid scale action: replicas must be a positive integer."
                 )
                 self.state_store.save(workflow_id, state)
                 return state
 
-        # 5. Execute the approved simulated action.
+        # =========================================================
+        # 5. Execute Approved Simulated Action
+        # =========================================================
         if target_tool in {"simulate_restart", "simulate_scale"}:
             action_start = self.tracer.start_timer()
             action_result = None
             last_error = None
 
-            # max_retries=2 allows at most 3 attempts.
             for attempt in range(settings.max_retries + 1):
                 try:
                     attempt_start = time.perf_counter()
@@ -564,11 +583,9 @@ class IncidentWorkflow:
                         )
 
                     elapsed_seconds = time.perf_counter() - attempt_start
-
                     if elapsed_seconds > settings.tool_timeout_seconds:
                         raise TimeoutError(
-                            "Tool execution exceeded "
-                            f"{settings.tool_timeout_seconds} seconds."
+                            f"Tool execution exceeded {settings.tool_timeout_seconds} seconds."
                         )
 
                     self.tracer.record(
@@ -585,7 +602,6 @@ class IncidentWorkflow:
 
                 except Exception as exc:
                     last_error = str(exc)
-
                     self.tracer.record(
                         "tool_retry",
                         "orchestrator",
@@ -596,19 +612,15 @@ class IncidentWorkflow:
                             "error": last_error,
                         },
                     )
-
                     action_result = None
 
             action_latency = self.tracer.elapsed_ms(action_start)
 
-            # All attempts failed.
             if action_result is None:
                 self._transition_to(state, State.FAILED)
                 state["error"] = (
-                    f"Tool execution failed after "
-                    f"{settings.max_retries + 1} attempts: {last_error}"
+                    f"Tool execution failed after {settings.max_retries + 1} attempts: {last_error}"
                 )
-
                 self.tracer.record(
                     "tool_failed",
                     "orchestrator",
@@ -620,7 +632,6 @@ class IncidentWorkflow:
                     },
                     latency_ms=action_latency,
                 )
-
                 self.state_store.save(workflow_id, state)
                 return state
 

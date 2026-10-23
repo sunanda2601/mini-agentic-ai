@@ -225,3 +225,50 @@ def test_approved_scale_action_calls_scale_tool(tmp_path, monkeypatch):
     assert result["status"] == "COMPLETED"
     assert result["action_result"]["success"] is True
     assert result["action_result"]["simulated"] is True
+
+
+def test_execution_boundary_blocks_stopped_workflow(
+    tmp_path, monkeypatch
+):
+    """A stopped workflow must never execute its proposed action."""
+    workflow = IncidentWorkflow()
+    workflow.state_store = WorkflowStateStore(
+        directory=str(tmp_path)
+    )
+
+    def fail_if_called(_request):
+        raise AssertionError(
+            "simulate_restart must not execute for a stopped workflow."
+        )
+
+    monkeypatch.setattr(
+        "app.orchestration.graph.simulate_restart",
+        fail_if_called,
+    )
+
+    stopped_state = {
+        "incident": {
+            "incident_id": "STOPPED-EXEC-001",
+            "service": "payment-service",
+            "environment": "production",
+        },
+        "verification": {
+            "payload": {
+                "proposed_action": {
+                    "tool": "simulate_restart",
+                    "service": "payment-service",
+                }
+            }
+        },
+        "approval": {
+            "required": True,
+            "status": "STOPPED",
+        },
+        "status": "STOPPED",
+        "error": "Operator stopped the workflow.",
+    }
+
+    result = workflow._execute_approved_action(stopped_state)
+
+    assert result["status"] == "STOPPED"
+    assert result["error"] == "Operator stopped the workflow."

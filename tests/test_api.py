@@ -4,6 +4,11 @@ from fastapi.testclient import TestClient
 from app.api import app, workflow
 from app.orchestration.persistence import WorkflowStateStore
 
+import hashlib
+import json
+
+from app.tracing.tracer import Tracer
+
 
 @pytest.fixture
 def client(tmp_path):
@@ -150,3 +155,153 @@ def test_api_approve_invalid_status_returns_400(client):
     resp = client.post("/incidents/API-DOUBLE-001/approve")
     assert resp.status_code == 400
     assert "not waiting for approval" in resp.json()["detail"].lower()
+
+
+def test_api_get_audit_trace(client):
+    payload = {
+        "incident_id": "API-AUDIT-001",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test audit retrieval.",
+    }
+
+    create_response = client.post("/incidents", json=payload)
+    assert create_response.status_code == 201
+
+    response = client.get("/incidents/API-AUDIT-001/audit")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["workflow_id"] == "API-AUDIT-001"
+    assert data["event_count"] > 0
+    assert any(
+        event["event_type"] == "workflow_started"
+        for event in data["events"]
+    )
+
+
+def test_api_verify_audit_trace(client):
+    payload = {
+        "incident_id": "API-AUDIT-VERIFY-001",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test audit verification.",
+    }
+
+    client.post("/incidents", json=payload)
+
+    response = client.get(
+        "/incidents/API-AUDIT-VERIFY-001/audit/verify"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["valid"] is True
+    assert data["event_count"] > 0
+
+
+def test_api_replay_audit_does_not_reexecute_actions(
+    client,
+    monkeypatch,
+):
+    payload = {
+        "incident_id": "API-AUDIT-REPLAY-001",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test audit-only replay.",
+    }
+
+    client.post("/incidents", json=payload)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Workflow execution must not be repeated.")
+
+    monkeypatch.setattr(workflow, "run", fail_if_called)
+
+    response = client.get(
+        "/incidents/API-AUDIT-REPLAY-001/audit/replay"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["valid"] is True
+    assert data["replay_mode"] == "audit_only"
+    assert data["actions_reexecuted"] is False
+    assert data["event_count"] > 0
+
+
+def test_api_audit_unknown_workflow_returns_404(client):
+    response = client.get(
+        "/incidents/UNKNOWN-AUDIT-001/audit"
+    )
+
+    assert response.status_code == 404
+
+
+def test_api_audit_missing_trace_returns_404(client):
+    # Save a state without creating a corresponding audit trace.
+    workflow.state_store.save(
+        "API-AUDIT-NO-TRACE",
+        {
+            "incident": {"incident_id": "API-AUDIT-NO-TRACE"},
+            "status": "COMPLETED",
+        },
+    )
+
+    response = client.get(
+        "/incidents/API-AUDIT-NO-TRACE/audit"
+    )
+
+    assert response.status_code == 404
+
+
+def test_api_audit_corruption_returns_409(client):
+    workflow_id = "API-AUDIT-CORRUPT-001"
+
+    payload = {
+        "incident_id": workflow_id,
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test corrupted audit detection.",
+    }
+
+    client.post("/incidents", json=payload)
+
+    base_directory = (
+        workflow.audit_directory
+        if workflow.audit_directory is not None
+        else workflow.state_store.directory / "audit"
+    )
+
+    safe_name = hashlib.sha256(
+        workflow_id.encode("utf-8")
+    ).hexdigest()
+
+    audit_path = base_directory / f"{safe_name}.jsonl"
+
+    # Tamper with a persisted event without recalculating its hash.
+    events = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    events[0]["component"] = "tampered-component"
+
+    audit_path.write_text(
+        "".join(
+            json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get(
+        f"/incidents/{workflow_id}/audit/verify"
+    )
+
+    assert response.status_code == 409
+    assert "integrity" in response.json()["detail"].lower()

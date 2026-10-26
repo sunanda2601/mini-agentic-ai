@@ -66,6 +66,76 @@ def test_api_create_incident_invalid_request(client):
     response = client.post("/incidents", json=payload)
     assert response.status_code == 422
 
+def test_api_rejects_invalid_severity(client):
+    payload = {
+        "incident_id": "API-INVALID-SEVERITY",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test invalid severity.",
+        "severity": "urgent",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 422
+    assert "severity" in response.text.lower()
+
+
+def test_api_rejects_blank_service(client):
+    payload = {
+        "incident_id": "API-BLANK-SERVICE",
+        "service": "   ",
+        "environment": "staging",
+        "description": "Test blank service.",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_api_rejects_empty_description(client):
+    payload = {
+        "incident_id": "API-EMPTY-DESCRIPTION",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_api_normalizes_uppercase_severity(client):
+    payload = {
+        "incident_id": "API-UPPERCASE-SEVERITY",
+        "service": "payment-service",
+        "environment": "production",
+        "description": "Test uppercase severity.",
+        "severity": "HIGH",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["incident"]["severity"] == "high"
+
+
+def test_api_defaults_severity_to_medium(client):
+    payload = {
+        "incident_id": "API-DEFAULT-SEVERITY",
+        "service": "payment-service",
+        "environment": "production",
+        "description": "Test default severity.",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["incident"]["severity"] == "medium"
+
+
 
 def test_api_get_incident_found_and_not_found(client):
     # Not found

@@ -1,13 +1,13 @@
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
-
-from app.models.incident import Incident
-from app.orchestration.graph import IncidentWorkflow
-
 import hashlib
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
+
+from app.models.incident import Incident
+from app.orchestration.graph import IncidentWorkflow
 from app.tracing.tracer import Tracer, TraceIntegrityError
+
 
 app = FastAPI(
     title="Mini Agentic AI Platform",
@@ -16,6 +16,7 @@ app = FastAPI(
 )
 
 workflow = IncidentWorkflow()
+
 
 def _get_audit_tracer(workflow_id: str) -> Tracer:
     """Load the verified audit trace for an existing workflow."""
@@ -45,22 +46,66 @@ def _get_audit_tracer(workflow_id: str) -> Tracer:
 
 
 class IncidentRequest(BaseModel):
-    incident_id: str = Field(..., description="Unique incident identifier")
-    service: str = Field(..., description="Target service name")
-    environment: str = Field(..., description="Deployment environment")
-    description: str = Field(..., description="Incident description")
+    incident_id: str = Field(
+        ...,
+        description="Unique incident identifier",
+    )
+    service: str = Field(
+        ...,
+        description="Target service name",
+    )
+    environment: str = Field(
+        ...,
+        description="Deployment environment",
+    )
+    description: str = Field(
+        ...,
+        description="Incident description",
+    )
     severity: str = Field(
         default="medium",
-        description="Severity level (e.g., low, medium, high, critical)",
+        description="Severity level (low, medium, high, critical)",
     )
+
+    @field_validator("incident_id", "service", "description")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        """Reject empty or whitespace-only required text fields."""
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "This field must not be empty or whitespace."
+            )
+
+        return value
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, value: str) -> str:
+        """Normalize severity and reject unsupported values."""
+        value = value.strip().lower()
+        allowed = {"low", "medium", "high", "critical"}
+
+        if value not in allowed:
+            raise ValueError(
+                f"Invalid severity '{value}'. "
+                f"Allowed values: {', '.join(sorted(allowed))}."
+            )
+
+        return value
 
 
 class RejectionRequest(BaseModel):
-    reason: str = Field(default="Rejected by human reviewer.")
+    reason: str = Field(
+        default="Rejected by human reviewer."
+    )
 
 
 class StopRequest(BaseModel):
-    reason: str = Field(default="Workflow stopped by operator.")
+    reason: str = Field(
+        default="Workflow stopped by operator."
+    )
 
 
 @app.get("/health")
@@ -81,8 +126,10 @@ def create_incident(request: IncidentRequest):
             description=request.description,
             severity=request.severity,
         )
+
         result = workflow.run(incident)
         return result
+
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -94,6 +141,7 @@ def create_incident(request: IncidentRequest):
 def get_incident(workflow_id: str):
     try:
         return workflow.state_store.load(workflow_id)
+
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -105,11 +153,13 @@ def get_incident(workflow_id: str):
 def approve_incident(workflow_id: str):
     try:
         return workflow.approve(workflow_id)
+
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -127,17 +177,24 @@ def reject_incident(
         rejection_reason = (
             reason
             if reason
-            else (payload.reason if payload else "Rejected by human reviewer.")
+            else (
+                payload.reason
+                if payload
+                else "Rejected by human reviewer."
+            )
         )
+
         return workflow.reject(
             workflow_id,
             reason=rejection_reason,
         )
+
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -155,22 +212,30 @@ def stop_incident(
         stop_reason = (
             reason
             if reason
-            else (payload.reason if payload else "Workflow stopped by operator.")
+            else (
+                payload.reason
+                if payload
+                else "Workflow stopped by operator."
+            )
         )
+
         return workflow.stop(
             workflow_id,
             reason=stop_reason,
         )
+
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
 
 @app.get("/incidents/{workflow_id}/audit")
 def get_incident_audit(workflow_id: str):
@@ -240,7 +305,9 @@ def replay_incident_audit(workflow_id: str):
         event_types = {}
         for event in events:
             event_type = event["event_type"]
-            event_types[event_type] = event_types.get(event_type, 0) + 1
+            event_types[event_type] = (
+                event_types.get(event_type, 0) + 1
+            )
 
         return {
             "workflow_id": workflow_id,

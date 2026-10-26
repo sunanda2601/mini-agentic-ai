@@ -10,11 +10,13 @@ from app.tools.schemas import (
 
 SERVICES_FILE = Path("data/infrastructure/services.json")
 
+MIN_REPLICAS = 1
+MAX_REPLICAS = 10
+
 
 def simulate_scale(
     request: SimulateScaleRequest,
 ) -> SimulateScaleResponse:
-
     if request.environment not in {"production", "staging"}:
         return SimulateScaleResponse(
             success=False,
@@ -34,7 +36,7 @@ def simulate_scale(
             ),
         )
 
-    if request.replicas < 1:
+    if not MIN_REPLICAS <= request.replicas <= MAX_REPLICAS:
         return SimulateScaleResponse(
             success=False,
             tenant_id=request.tenant_id,
@@ -46,7 +48,10 @@ def simulate_scale(
             message="Scale action was not executed.",
             error=ToolError(
                 code="INVALID_REPLICA_COUNT",
-                message="Replica count must be at least 1.",
+                message=(
+                    f"Replica count must be between "
+                    f"{MIN_REPLICAS} and {MAX_REPLICAS}."
+                ),
             ),
         )
 
@@ -67,9 +72,7 @@ def simulate_scale(
         )
 
     services = json.loads(
-        SERVICES_FILE.read_text(
-            encoding="utf-8"
-        )
+        SERVICES_FILE.read_text(encoding="utf-8")
     )
 
     if request.service not in services:

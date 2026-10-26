@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
 
 class GetLogsRequest(BaseModel):
@@ -61,7 +61,7 @@ class SimulateRestartResponse(BaseModel):
 class SimulateScaleRequest(BaseModel):
     tenant_id: str = "demo-tenant"
     service: str
-    replicas: int
+    replicas: StrictInt = Field(ge=1, le=10)
     environment: str = "production"
 
 

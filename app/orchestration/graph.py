@@ -549,15 +549,15 @@ class IncidentWorkflow:
             if (
                 isinstance(replicas, bool)
                 or not isinstance(replicas, int)
-                or replicas < 1
+                or not 1 <= replicas <= 10
             ):
                 self._transition_to(state, State.FAILED)
                 state["error"] = (
-                    "Invalid scale action: replicas must be a positive integer."
+                    "Invalid scale action: replicas must be an integer "
+                    "between 1 and 10."
                 )
                 self.state_store.save(workflow_id, state)
                 return state
-
         # =========================================================
         # 5. Execute Approved Simulated Action
         # =========================================================

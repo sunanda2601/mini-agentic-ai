@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.tools.logs import get_logs
 from app.tools.metrics import get_metrics
 from app.tools.restart import simulate_restart
@@ -74,6 +77,34 @@ def test_simulate_scale():
     assert response.simulated is True
     assert response.requested_replicas == 5
     assert response.version == "1.0.0"
+    assert response.error is None
+
+
+def test_simulate_scale_rejects_zero_replicas():
+    with pytest.raises(ValidationError):
+        SimulateScaleRequest(
+            service="payment-service",
+            replicas=0,
+            environment="staging",
+        )
+
+
+def test_simulate_scale_rejects_more_than_ten_replicas():
+    with pytest.raises(ValidationError):
+        SimulateScaleRequest(
+            service="payment-service",
+            replicas=11,
+            environment="staging",
+        )
+
+
+def test_simulate_scale_rejects_boolean_replicas():
+    with pytest.raises(ValidationError):
+        SimulateScaleRequest(
+            service="payment-service",
+            replicas=True,
+            environment="staging",
+        )
 
 
 def test_dependency_graph():

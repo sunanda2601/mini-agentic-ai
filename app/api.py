@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
@@ -8,6 +9,8 @@ from app.models.incident import Incident
 from app.orchestration.graph import IncidentWorkflow
 from app.tracing.tracer import Tracer, TraceIntegrityError
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Mini Agentic AI Platform",
@@ -130,11 +133,17 @@ def create_incident(request: IncidentRequest):
         result = workflow.run(incident)
         return result
 
-    except Exception as exc:
+    except HTTPException:
+        raise
+
+    except Exception:
+        # Keep the full traceback in server logs, not in the API response.
+        logger.exception("Failed to create incident workflow")
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        ) from exc
+            detail="Internal server error.",
+        )
 
 
 @app.get("/incidents/{workflow_id}")

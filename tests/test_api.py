@@ -66,6 +66,27 @@ def test_api_create_incident_invalid_request(client):
     response = client.post("/incidents", json=payload)
     assert response.status_code == 422
 
+
+def test_api_create_incident_hides_internal_error(client, monkeypatch):
+    def fail_workflow(incident):
+        raise RuntimeError("Sensitive internal implementation detail")
+
+    monkeypatch.setattr(workflow, "run", fail_workflow)
+
+    payload = {
+        "incident_id": "API-INTERNAL-ERROR",
+        "service": "payment-service",
+        "environment": "staging",
+        "description": "Test internal error handling.",
+    }
+
+    response = client.post("/incidents", json=payload)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error."
+    assert "Sensitive internal implementation detail" not in response.text
+
+
 def test_api_rejects_invalid_severity(client):
     payload = {
         "incident_id": "API-INVALID-SEVERITY",

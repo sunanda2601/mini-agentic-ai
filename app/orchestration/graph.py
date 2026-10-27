@@ -1,8 +1,8 @@
-
 import hashlib
 import json
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from app.config import settings
@@ -38,6 +38,10 @@ from app.version import (
     AGENT_VERSIONS,
     TOOL_VERSIONS,
 )
+
+
+class ToolExecutionTimeoutError(TimeoutError):
+    """Raised when an approved tool exceeds its configured execution deadline."""
 
 
 class IncidentWorkflow:
@@ -618,22 +622,42 @@ class IncidentWorkflow:
                             )
                         return result.model_dump()
 
-                    action_result_data = idempotency_store.execute_once(
+                    # Wait only up to the configured deadline. Do not use a
+                    # ThreadPoolExecutor context manager here: its __exit__ waits
+                    # for running work and would defeat the timeout.
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    future = executor.submit(
+                        idempotency_store.execute_once,
                         action_key,
                         action_payload,
                         execute_tool,
                     )
+                    try:
+                        action_result_data = future.result(
+                            timeout=settings.tool_timeout_seconds
+                        )
+                    except FutureTimeoutError as exc:
+                        # Cancellation succeeds only if work has not started.
+                        # A running Python thread cannot be forcibly stopped, so
+                        # mark this attempt terminal and do not retry it.
+                        future.cancel()
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise ToolExecutionTimeoutError(
+                            f"Tool execution timed out after "
+                            f"{settings.tool_timeout_seconds} seconds. The operation "
+                            "may still be running in the background."
+                        ) from exc
+                    except Exception:
+                        executor.shutdown(wait=True)
+                        raise
+                    else:
+                        executor.shutdown(wait=True)
+
                     action_result = (
                         SimulateRestartResponse.model_validate(action_result_data)
                         if target_tool == "simulate_restart"
                         else SimulateScaleResponse.model_validate(action_result_data)
                     )
-
-                    elapsed_seconds = time.perf_counter() - attempt_start
-                    if elapsed_seconds > settings.tool_timeout_seconds:
-                        raise TimeoutError(
-                            f"Tool execution exceeded {settings.tool_timeout_seconds} seconds."
-                        )
 
                     self.tracer.record(
                         "tool_attempt",
@@ -645,6 +669,24 @@ class IncidentWorkflow:
                             "success": action_result.success,
                         },
                     )
+                    break
+
+                except ToolExecutionTimeoutError as exc:
+                    last_error = str(exc)
+                    self.tracer.record(
+                        "tool_timeout",
+                        "orchestrator",
+                        {
+                            "tool": target_tool,
+                            "attempt": attempt + 1,
+                            "max_attempts": settings.max_retries + 1,
+                            "timeout_seconds": settings.tool_timeout_seconds,
+                            "error": last_error,
+                        },
+                    )
+                    action_result = None
+                    # Do not retry a timed-out operation: the worker thread may
+                    # still be running and could complete the side effect later.
                     break
 
                 except Exception as exc:

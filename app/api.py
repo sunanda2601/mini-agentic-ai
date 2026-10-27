@@ -1,10 +1,10 @@
 import hashlib
 import logging
+import secrets
 from pathlib import Path
-
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-
+from app.config import settings
 from app.models.incident import Incident
 from app.orchestration.graph import IncidentWorkflow
 from app.tracing.tracer import Tracer, TraceIntegrityError
@@ -19,6 +19,23 @@ app = FastAPI(
 )
 
 workflow = IncidentWorkflow()
+
+def verify_approval_key(
+    x_approval_key: str | None = Header(default=None),
+) -> None:
+    """Require a configured API key before allowing HTTP approvals."""
+
+    expected_key = settings.approval_api_key
+
+    if (
+        not expected_key
+        or not x_approval_key
+        or not secrets.compare_digest(x_approval_key, expected_key)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing approval credentials.",
+        )
 
 
 def _get_audit_tracer(workflow_id: str) -> Tracer:
@@ -120,7 +137,10 @@ def health():
 
 
 @app.post("/incidents", status_code=status.HTTP_201_CREATED)
-def create_incident(request: IncidentRequest):
+def create_incident(
+    request: IncidentRequest,
+    _: None = Depends(verify_approval_key),
+):
     try:
         incident = Incident(
             incident_id=request.incident_id,
@@ -147,7 +167,10 @@ def create_incident(request: IncidentRequest):
 
 
 @app.get("/incidents/{workflow_id}")
-def get_incident(workflow_id: str):
+def get_incident(
+    workflow_id: str,
+    _: None = Depends(verify_approval_key),
+):
     try:
         return workflow.state_store.load(workflow_id)
 
@@ -159,7 +182,10 @@ def get_incident(workflow_id: str):
 
 
 @app.post("/incidents/{workflow_id}/approve")
-def approve_incident(workflow_id: str):
+def approve_incident(
+    workflow_id: str,
+    _: None = Depends(verify_approval_key),
+):
     try:
         return workflow.approve(workflow_id)
 
@@ -181,6 +207,7 @@ def reject_incident(
     workflow_id: str,
     payload: RejectionRequest | None = None,
     reason: str | None = None,
+    _: None = Depends(verify_approval_key),
 ):
     try:
         rejection_reason = (
@@ -216,6 +243,7 @@ def stop_incident(
     workflow_id: str,
     payload: StopRequest | None = None,
     reason: str | None = None,
+    _: None = Depends(verify_approval_key),
 ):
     try:
         stop_reason = (
@@ -247,7 +275,10 @@ def stop_incident(
 
 
 @app.get("/incidents/{workflow_id}/audit")
-def get_incident_audit(workflow_id: str):
+def get_incident_audit(
+    workflow_id: str,
+    _: None = Depends(verify_approval_key),
+):
     """Retrieve the verified audit events for a workflow."""
     try:
         tracer = _get_audit_tracer(workflow_id)
@@ -273,7 +304,10 @@ def get_incident_audit(workflow_id: str):
 
 
 @app.get("/incidents/{workflow_id}/audit/verify")
-def verify_incident_audit(workflow_id: str):
+def verify_incident_audit(
+    workflow_id: str,
+    _: None = Depends(verify_approval_key),
+):
     """Verify the integrity of a workflow's persisted audit trace."""
     try:
         tracer = _get_audit_tracer(workflow_id)
@@ -303,7 +337,10 @@ def verify_incident_audit(workflow_id: str):
 
 
 @app.get("/incidents/{workflow_id}/audit/replay")
-def replay_incident_audit(workflow_id: str):
+def replay_incident_audit(
+    workflow_id: str,
+    _: None = Depends(verify_approval_key),
+):
     """Replay verified audit records without rerunning workflow actions."""
     try:
         tracer = _get_audit_tracer(workflow_id)

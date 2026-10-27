@@ -86,3 +86,38 @@ def test_empty_key_is_rejected(tmp_path):
 
     with pytest.raises(ValueError):
         store.execute_once("", {"service": "payments"}, lambda: {"success": True})
+
+
+def test_concurrent_stores_execute_same_key_once(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+
+    path = str(tmp_path / "idempotency.json")
+    store_a = IdempotencyStore(path)
+    store_b = IdempotencyStore(path)
+
+    calls = {"count": 0}
+    calls_lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def operation():
+        with calls_lock:
+            calls["count"] += 1
+
+        time.sleep(0.05)
+        return {"success": True, "message": "simulated"}
+
+    def run(store):
+        barrier.wait()
+        return store.execute_once(
+            "concurrent-action-1",
+            {"service": "payment-service", "environment": "staging"},
+            operation,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(run, [store_a, store_b]))
+
+    assert results[0] == results[1]
+    assert calls["count"] == 1

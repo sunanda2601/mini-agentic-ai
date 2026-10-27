@@ -1,4 +1,3 @@
-from sentence_transformers import SentenceTransformer
 import numpy as np
 
 from app.rag.documents import load_documents
@@ -7,6 +6,8 @@ from app.rag.documents import load_documents
 class SemanticSearcher:
     def __init__(self):
         self.documents = load_documents()
+
+        from sentence_transformers import SentenceTransformer
 
         self.model = SentenceTransformer(
             "all-MiniLM-L6-v2"
@@ -39,7 +40,6 @@ class SemanticSearcher:
         results = []
 
         for index in ranked_indices:
-
             document = self.documents[index]
 
             if metadata_filter:
